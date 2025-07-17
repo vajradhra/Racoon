@@ -218,157 +218,26 @@ func normalizeType(typeStr string) string {
 	return typeStr
 }
 
-func generateGraphviz(structs map[string]*StructInfo, functions []FunctionInfo, codeFiles map[string]string) string {
-	var nodeBuf, relBuf strings.Builder
-	nodeBuf.WriteString("digraph UML {\n  node [fontname=Helvetica];\n")
-
-	// 只保留以core_开头的函数及其调用链
-	keep := make(map[string]bool)
-	for _, fn := range functions {
-		keep[fn.Name] = true // 或根据你的需求过滤
-	}
-
-	// 统计最大调用次数
-	calls := extractFunctionCalls(functions, codeFiles)
-	maxCount := 1
-	for _, calleeMap := range calls {
-		for _, count := range calleeMap {
-			if count > maxCount {
-				maxCount = count
-			}
-		}
-	}
-
-	// 递归检测
-	isRecursive := make(map[string]bool)
-	var dfs func(start, curr string, visited map[string]bool) bool
-	dfs = func(start, curr string, visited map[string]bool) bool {
-		if curr == start && len(visited) > 0 {
-			return true
-		}
-		if visited[curr] {
-			return false
-		}
-		visited[curr] = true
-		for next := range calls[curr] {
-			if keep[next] && dfs(start, next, visited) {
-				return true
-			}
-		}
-		return false
-	}
-	for fname := range keep {
-		visited := make(map[string]bool)
-		if dfs(fname, fname, visited) {
-			isRecursive[fname] = true
-		}
-	}
-
-	// 结构体节点
-	for _, s := range structs {
-		if s.Name != "" && len(s.Fields) > 0 {
-			nodeBuf.WriteString(fmt.Sprintf("  %s [shape=record, label=\"{%s|", s.Name, s.Name))
-			for i, f := range s.Fields {
-				if i > 0 {
-					nodeBuf.WriteString("\\l")
-				}
-				nodeBuf.WriteString(f)
-			}
-			nodeBuf.WriteString("}\"];\n")
-		}
-	}
-	// 结构体关系
-	structNames := make(map[string]bool, len(structs))
-	for name := range structs {
-		structNames[name] = true
-	}
-	for _, s := range structs {
-		for _, f := range s.Fields {
-			parts := strings.Fields(f)
-			if len(parts) < 2 {
-				continue
-			}
-			typeStr := strings.Join(parts[:len(parts)-1], " ")
-			fieldName := parts[len(parts)-1]
-			baseType := normalizeType(typeStr)
-			if structNames[baseType] && baseType != s.Name {
-				lowerField := strings.ToLower(fieldName)
-				typeIsPtr := strings.Contains(typeStr, "*")
-				typeIsArr := strings.Contains(typeStr, "[") && strings.Contains(typeStr, "]")
-				if (lowerField == "base" || lowerField == "parent" || lowerField == "super") && baseType != "" {
-					relBuf.WriteString(fmt.Sprintf("  %s -> %s [arrowhead=onormal, label=\"继承\"]\n", s.Name, baseType))
-				} else if typeIsPtr || typeIsArr {
-					relBuf.WriteString(fmt.Sprintf("  %s -> %s [arrowhead=odiamond, label=\"聚合\"]\n", s.Name, baseType))
-				} else {
-					relBuf.WriteString(fmt.Sprintf("  %s -> %s [style=dashed, arrowhead=open, label=\"依赖\"]\n", s.Name, baseType))
-				}
-			}
-		}
-	}
-	// 函数节点
-	for _, fn := range functions {
-		if fn.Name == "" {
-			continue
-		}
-		nodeBuf.WriteString(fmt.Sprintf("  func_%s [shape=ellipse, label=\"%s\"];\n", fn.Name, fn.Name))
-	}
-	// 函数调用关系
-	for caller, calleeMap := range calls {
-		if !keep[caller] {
-			continue
-		}
-		for callee, count := range calleeMap {
-			if !keep[callee] {
-				continue
-			}
-			label := fmt.Sprintf("%d", count)
-			idx := 0
-			if maxCount > 1 {
-				idx = (count - 1) * (len(colors) - 1) / (maxCount - 1)
-			}
-			if idx < 0 {
-				idx = 0
-			}
-			if idx >= len(colors) {
-				idx = len(colors) - 1
-			}
-			color := colors[idx]
-			if caller == callee || (isRecursive[caller] && isRecursive[callee]) {
-				relBuf.WriteString(fmt.Sprintf("  func_%s -> func_%s [penwidth=1, label=\"%s\"]\n", caller, callee, label))
-			} else {
-				relBuf.WriteString(fmt.Sprintf("  func_%s -> func_%s [color=\"%s\", label=\"%s\"]\n", caller, callee, color, label))
-			}
-		}
-	}
-	nodeBuf.WriteString(relBuf.String())
-	nodeBuf.WriteString("}\n")
-	return nodeBuf.String()
-}
-
 func generateCallGraph(functions []FunctionInfo, codeFiles map[string]string) string {
-	var nodeBuf, relBuf strings.Builder
-	nodeBuf.WriteString("digraph CallGraph {\n  node [fontname=Helvetica];\n")
+	var nodeBuf strings.Builder
 
-	// 1. 保留所有函数（调试用，后续可加过滤）
+	nodeBuf.WriteString("digraph CallGraph {\n")
+	nodeBuf.WriteString("  rankdir=TB;\n")
+	nodeBuf.WriteString("  bgcolor=\"#ffffff\";\n")
+	nodeBuf.WriteString("  fontname=\"Segoe UI\";\n")
+	nodeBuf.WriteString("  fontsize=12;\n")
+	nodeBuf.WriteString("  fontcolor=\"#000000\";\n\n")
+
+	// 1. 保留所有函数
 	keep := make(map[string]bool)
 	for _, fn := range functions {
 		keep[fn.Name] = true
 	}
-	fmt.Println("保留的函数数量：", len(keep))
-	for k := range keep {
-		fmt.Println("保留函数：", k)
-	}
 
 	// 2. 提取调用关系
 	calls := extractFunctionCalls(functions, codeFiles)
-	fmt.Println("调用关系数量：", len(calls))
-	for caller, calleeMap := range calls {
-		for callee, count := range calleeMap {
-			fmt.Printf("%s -> %s: %d\n", caller, callee, count)
-		}
-	}
 
-	// 3. 分组（可选，BelongsTo 为空时全部分到 other）
+	// 3. 分组
 	fileGroups := make(map[string][]string)
 	for _, fn := range functions {
 		if !keep[fn.Name] {
@@ -377,17 +246,23 @@ func generateCallGraph(functions []FunctionInfo, codeFiles map[string]string) st
 		file := fn.BelongsTo
 		fileGroups[file] = append(fileGroups[file], fn.Name)
 	}
+
+	// 颜色方案
+	nodeColors := []string{
+		"#4a90e2", "#50c878", "#f3912", "#e74c3c", "#9b596", "#1abc9", "#f1c40f", "#e67e22",
+	}
+
 	clusterIdx := 0
 	for file, fnames := range fileGroups {
-		nodeBuf.WriteString(fmt.Sprintf("  subgraph cluster_%d {\n    label=\"%s\";\n    style=filled;\n    color=\"#f0f0f0\";\n", clusterIdx, file))
-		for _, fname := range fnames {
-			shape := "ellipse"
-			color := "#4682b4"
+		nodeBuf.WriteString(fmt.Sprintf("  subgraph cluster_%d {\n    label=\"%s\";\n    style=filled;\n    color=\"#ffffff\";\n    fillcolor=\"#ffffff\";\n    fontcolor=\"#000000\";\n    fontsize=11;\n    fontname=\"Segoe UI\";\n    penwidth=0;\n", clusterIdx, file))
+		for i, fname := range fnames {
+			shape := "box"
+			nodeColor := nodeColors[i%len(nodeColors)]
 			if fname == "main" {
-				shape = "doublecircle"
-				color = "#e67e22"
+				shape = "doubleoctagon"
+				nodeColor = "#e67e22"
 			}
-			nodeBuf.WriteString(fmt.Sprintf("    func_%s [label=\"%s\", shape=%s, style=filled, fillcolor=\"%s\"];\n", fname, fname, shape, color))
+			nodeBuf.WriteString(fmt.Sprintf("    func_%s [label=\"%s\", shape=%s, style=\"rounded,filled\", fillcolor=\"%s\", color=\"#ffffff\", penwidth=0, fontcolor=\"#ffffff\", fontsize=10, fontname=\"Segoe UI\"];\n", fname, fname, shape, nodeColor))
 		}
 		nodeBuf.WriteString("  }\n")
 		clusterIdx++
@@ -402,7 +277,6 @@ func generateCallGraph(functions []FunctionInfo, codeFiles map[string]string) st
 			}
 		}
 	}
-	fmt.Println("maxCount:", maxCount)
 
 	// 5. 检查递归
 	isRecursive := make(map[string]bool)
@@ -439,25 +313,15 @@ func generateCallGraph(functions []FunctionInfo, codeFiles map[string]string) st
 				continue
 			}
 			label := fmt.Sprintf("%d", count)
-			idx := 0
-			if maxCount > 1 {
-				idx = (count - 1) * (len(colors) - 1) / (maxCount - 1)
-			}
-			if idx < 0 {
-				idx = 0
-			}
-			if idx >= len(colors) {
-				idx = len(colors) - 1
-			}
-			color := colors[idx]
+			color := "#e74c3c"
+			style := "solid"
 			if caller == callee || (isRecursive[caller] && isRecursive[callee]) {
-				relBuf.WriteString(fmt.Sprintf("  func_%s -> func_%s [penwidth=1, label=\"%s\"]\n", caller, callee, label))
-			} else {
-				relBuf.WriteString(fmt.Sprintf("  func_%s -> func_%s [color=\"%s\", label=\"%s\"];\n", caller, callee, color, label))
+				style = "dashed"
 			}
+			nodeBuf.WriteString(fmt.Sprintf("  func_%s -> func_%s [label=\"%s\", color=\"%s\", penwidth=1, style=%s];\n", caller, callee, label, color, style))
 		}
 	}
-	nodeBuf.WriteString(relBuf.String())
+
 	nodeBuf.WriteString("}\n")
 	return nodeBuf.String()
 }
